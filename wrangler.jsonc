@@ -1,0 +1,14 @@
+{
+  "name": "cuotiben",
+  "main": "src/index.js",
+  "compatibility_date": "2026-05-01",
+  "assets": { "directory": "public", "binding": "ASSETS", "run_worker_first": ["/api/*", "/llms.txt"] },
+  "d1_databases": [{ "binding": "DB", "database_name": "cuotiben-db", "database_id": "d82f120c-aa08-4071-9d8d-d3a625af1e15" }],
+  "r2_buckets": [{ "binding": "PHOTOS", "bucket_name": "cuotiben-photos" }],
+  "ai": { "binding": "AI" },
+  "vars": {
+    "VISION_MODEL": "@cf/google/gemma-4-26b-a4b-it",
+    "VISION_MODEL_FALLBACK": "@cf/meta/llama-3.2-11b-vision-instruct",
+    "TZ_OFFSET_MIN": "-240"
+  }
+}
