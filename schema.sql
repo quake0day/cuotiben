@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS mistakes (
   analysis TEXT NOT NULL DEFAULT '',
   tags TEXT NOT NULL DEFAULT '[]',
   source TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
   difficulty INTEGER,
   status TEXT NOT NULL DEFAULT 'open',
   streak INTEGER NOT NULL DEFAULT 0,

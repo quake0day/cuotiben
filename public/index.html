@@ -174,7 +174,7 @@ function openAdd() {
     <label class="f"><span>科目</span><div class="chips" id="subj">${SUBJECTS.map((s) => `<button class="chip" data-s="${s}" onclick="pickSubj(this)">${s}</button>`).join('')}</div></label>
     <label class="f"><span>知识点（可留空让 AI 填）</span><input class="t" id="topic" placeholder="如：两位数乘法 / 形近字"></label>
     <label class="f"><span>来源</span><input class="t" id="source" placeholder="如：数学作业 10/13 / 单元测验"></label>
-    <label class="f"><span>备注 / 错因（可留空）</span><textarea class="t" id="analysis"></textarea></label>
+    <label class="f"><span>备注（给 AI 的提示，如"第4、5题错了"，可留空）</span><textarea class="t" id="note" rows="2"></textarea></label>
     <label class="f" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="ai" checked> 保存后让 AI 自动识别题目、答案和错因</label>
     <button class="btn acc" id="save" onclick="saveNew()">保存</button>`,
   );
@@ -218,14 +218,17 @@ async function saveNew() {
     fd.append('subject', $('#subj .on')?.dataset.s || '');
     fd.append('topic', $('#topic').value);
     fd.append('source', $('#source').value);
-    fd.append('analysis', $('#analysis').value);
+    fd.append('note', $('#note').value);
     pending.forEach((p, i) => fd.append('photo', p.blob, `photo${i}.jpg`));
     const m = await api('/mistakes', { method: 'POST', body: fd });
     toast('已保存');
     if ($('#ai').checked && m.images.length) {
       btn.textContent = 'AI 识别中…';
-      try { await apiJson(`/mistakes/${m.id}/recognize`, 'POST'); toast('AI 识别完成'); }
-      catch (e) { toast('AI 识别失败: ' + e.message); }
+      try {
+        const r = await apiJson(`/mistakes/${m.id}/recognize`, 'POST');
+        toast(r._ai.items > 1 ? `AI 识别出 ${r._ai.items} 道题，已分别入库` : 'AI 识别完成');
+        if (r._ai.created.length) { closeSheet(); return; }
+      } catch (e) { toast('AI 识别失败: ' + e.message); }
     }
     openDetail(m.id);
   } catch (e) { toast(e.message); btn.disabled = false; btn.textContent = '保存'; }
@@ -259,6 +262,7 @@ async function openDetail(id) {
       <label class="f"><span>难度 1-5</span><input class="t" data-k="difficulty" type="number" min="1" max="5" value="${m.difficulty ?? ''}" onchange="patch('${id}',this)"></label>
     </div>
     ${f('source', '来源', 1)}
+    ${f('note', '备注（AI 识别提示）', 1)}
     <label class="f"><span>状态</span><select class="t" data-k="status" onchange="patch('${id}',this)"><option value="open" ${m.status === 'open' ? 'selected' : ''}>待复习</option><option value="mastered" ${m.status === 'mastered' ? 'selected' : ''}>已掌握</option></select></label>
     <div class="hist" id="hist"></div>
     <p style="font-size:12px;color:var(--mute)">录入 ${fmtDT(m.created_at)} by ${esc(m.created_by)} · id ${m.id}</p>
@@ -280,7 +284,11 @@ async function addImg(id, files) {
 }
 async function recog(id) {
   const b = $('#recog'); b.disabled = true; b.textContent = '识别中…';
-  try { const r = await apiJson(`/mistakes/${id}/recognize`, 'POST'); toast(r._ai.filled.length ? '已填写: ' + r._ai.filled.join(', ') : '字段都已有内容，未覆盖'); openDetail(id); }
+  try {
+    const r = await apiJson(`/mistakes/${id}/recognize`, 'POST');
+    toast(r._ai.created.length ? `识别出 ${r._ai.items} 道题，新建了 ${r._ai.created.length} 条` : r._ai.filled.length ? '已填写: ' + r._ai.filled.join(', ') : '字段都已有内容，未覆盖');
+    if (r._ai.created.length) closeSheet(); else openDetail(id);
+  }
   catch (e) { toast('识别失败: ' + e.message); b.disabled = false; b.textContent = '🤖 AI 识别'; }
 }
 async function doReview(id, result) {

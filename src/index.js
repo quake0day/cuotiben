@@ -57,7 +57,7 @@ async function route(req, env, ctx, url, actor) {
       }
       if (seg[2] === 'review' && m === 'POST') return json(await review(req, env, id, actor, url.origin));
       if (seg[2] === 'reviews' && m === 'GET') return json(await listReviews(env, id));
-      if (seg[2] === 'recognize' && m === 'POST') return json(await recognize(env, id, url.origin));
+      if (seg[2] === 'recognize' && m === 'POST') return json(await recognize(env, id, url.origin, actor, await req.json().catch(() => ({}))));
     }
   }
   return json({ error: 'not found' }, 404);
@@ -107,7 +107,7 @@ async function login(req, env) {
 
 // ---------- mistakes ----------
 
-const FIELDS = ['subject', 'topic', 'question', 'wrong_answer', 'correct_answer', 'analysis', 'source'];
+const FIELDS = ['subject', 'topic', 'question', 'wrong_answer', 'correct_answer', 'analysis', 'source', 'note'];
 
 function cleanFields(src, partial = false) {
   const out = {};
@@ -164,12 +164,17 @@ async function createMistake(req, env, actor, origin) {
   const id = newId();
   const now = iso();
   const f = cleanFields(fields);
-  await env.DB.prepare(`INSERT INTO mistakes (id, subject, topic, question, wrong_answer, correct_answer, analysis, tags, source, difficulty, status, next_review_at, created_by, created_at, updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(id, f.subject, f.topic, f.question, f.wrong_answer, f.correct_answer, f.analysis, f.tags, f.source, f.difficulty,
-      f.status || 'open', isoDays(1), actor, now, now).run();
+  await insertMistake(env, id, f, actor);
   await storeImages(env, id, files);
   return getMistake(env, id, origin);
+}
+
+async function insertMistake(env, id, f, actor) {
+  const now = iso();
+  await env.DB.prepare(`INSERT INTO mistakes (id, subject, topic, question, wrong_answer, correct_answer, analysis, tags, source, note, difficulty, status, next_review_at, created_by, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(id, f.subject, f.topic, f.question, f.wrong_answer, f.correct_answer, f.analysis, f.tags, f.source, f.note || '', f.difficulty,
+      f.status || 'open', isoDays(1), actor, now, now).run();
 }
 
 async function updateMistake(req, env, id, origin) {
@@ -189,7 +194,10 @@ async function updateMistake(req, env, id, origin) {
 
 async function deleteMistake(env, id) {
   const imgs = (await env.DB.prepare('SELECT r2_key FROM images WHERE mistake_id = ?').bind(id).all()).results;
-  await Promise.all(imgs.map((i) => env.PHOTOS.delete(i.r2_key)));
+  for (const i of imgs) {
+    const shared = await env.DB.prepare('SELECT COUNT(*) c FROM images WHERE r2_key = ? AND mistake_id != ?').bind(i.r2_key, id).first('c');
+    if (!shared) await env.PHOTOS.delete(i.r2_key);
+  }
   await env.DB.batch([
     env.DB.prepare('DELETE FROM images WHERE mistake_id = ?').bind(id),
     env.DB.prepare('DELETE FROM reviews WHERE mistake_id = ?').bind(id),
@@ -275,7 +283,8 @@ async function addImages(req, env, id, origin) {
 async function deleteImage(env, id, imgId) {
   const img = await env.DB.prepare('SELECT * FROM images WHERE id = ? AND mistake_id = ?').bind(imgId, id).first();
   if (!img) throw Object.assign(new Error('not found'), { status: 404 });
-  await env.PHOTOS.delete(img.r2_key);
+  const shared = await env.DB.prepare('SELECT COUNT(*) c FROM images WHERE r2_key = ? AND id != ?').bind(img.r2_key, imgId).first('c');
+  if (!shared) await env.PHOTOS.delete(img.r2_key);
   await env.DB.prepare('DELETE FROM images WHERE id = ?').bind(imgId).run();
   return { ok: true };
 }
@@ -318,56 +327,83 @@ async function listReviews(env, id) {
 
 // ---------- AI 识题 ----------
 
-const RECOG_PROMPT = `这是一张小学生作业/试卷上错题的照片。请仔细阅读并以 JSON 格式输出（只输出 JSON，不要其它文字）：
-{
+const RECOG_PROMPT = `这是一张孩子作业/试卷/答案纸的照片，可能同时包含多道题。印刷体通常是题目或标准答案，手写的通常是孩子的作答或批改痕迹。
+任务：找出照片中孩子做错的题，每道错题单独输出一项。如果家长备注指定了题号或范围，严格按备注只输出这些题，每题一项。
+只输出 JSON，不要其它文字，格式：
+{"items":[
+ {
   "subject": "数学|语文|英语|科学|其他 之一",
-  "topic": "知识点，10字以内，如 两位数乘法 / 形近字 / 一般过去时",
-  "question": "题目原文，尽量完整转录（数学公式用普通文字写）",
-  "wrong_answer": "照片中学生写的错误答案（看不到则留空）",
+  "topic": "知识点，中文，10字以内，如 两位数乘法 / 四舍五入 / 一般过去时",
+  "question": "这道题的原文，保留原语言，尽量完整转录（数学式子用普通文字）",
+  "wrong_answer": "孩子写的错误答案（看不到则留空）",
   "correct_answer": "正确答案",
-  "analysis": "错因分析和正确解法，面向家长讲解，100字以内",
+  "analysis": "错因分析和正确解法，中文，面向家长，100字以内",
   "difficulty": 1到5的整数,
-  "tags": ["最多3个标签"]
-}`;
+  "tags": ["最多3个中文标签"]
+ }
+]}`;
 
-async function recognize(env, id, origin) {
+async function recognize(env, id, origin, actor, body = {}) {
   const m = await getMistakeOr404(env, id, origin);
   const img = m.images.find((i) => i.kind === 'question') || m.images[0];
   if (!img) throw new Error('这道题还没有照片');
-  const row = await env.DB.prepare('SELECT r2_key FROM images WHERE id = ?').bind(img.id).first();
-  const obj = await env.PHOTOS.get(row.r2_key);
+  const imgRow = await env.DB.prepare('SELECT * FROM images WHERE id = ?').bind(img.id).first();
+  const obj = await env.PHOTOS.get(imgRow.r2_key);
   const bytes = new Uint8Array(await obj.arrayBuffer());
   const dataUrl = `data:${img.content_type};base64,${b64encode(bytes)}`;
+  const hint = String(body.hint || m.note || '').trim();
+  const prompt = RECOG_PROMPT + (hint ? `\n\n家长备注：${hint}` : '') + (m.subject ? `\n科目：${m.subject}` : '');
 
   let raw, model = env.VISION_MODEL;
   try {
-    raw = await runVision(env, model, dataUrl);
+    raw = await runVision(env, model, dataUrl, prompt);
   } catch (e) {
     console.error('vision primary failed', e.message);
     model = env.VISION_MODEL_FALLBACK;
-    raw = await runVision(env, model, dataUrl);
+    raw = await runVision(env, model, dataUrl, prompt);
   }
   const parsed = extractJson(raw);
-  if (!parsed) throw new Error('AI 没有返回可解析的结果: ' + String(raw).slice(0, 200));
-  // 只填空白字段，不覆盖人工填写的内容
+  let items = Array.isArray(parsed?.items) ? parsed.items : parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? [parsed] : Array.isArray(parsed) ? parsed : [];
+  items = items.filter((x) => x && typeof x === 'object');
+  if (!items.length) throw new Error('AI 没有返回可解析的结果: ' + String(raw).slice(0, 200));
+
+  // 第一道题填进当前记录（只填空白字段），其余各建一条新记录，共用同一张照片
+  const first = cleanFields(aiPatch(m, items[0]), true);
+  const keys = Object.keys(first);
+  if (keys.length) {
+    await env.DB.prepare(`UPDATE mistakes SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
+      .bind(...keys.map((k) => first[k]), iso(), id).run();
+  }
+  const created = [];
+  for (const it of items.slice(1)) {
+    const nid = newId();
+    const f = cleanFields({ ...aiPatch({ subject: m.subject, tags: [] }, it), source: m.source, note: m.note });
+    if (!f.subject) f.subject = m.subject;
+    await insertMistake(env, nid, f, actor);
+    for (const im of m.images) {
+      const r = await env.DB.prepare('SELECT * FROM images WHERE id = ?').bind(im.id).first();
+      await env.DB.prepare('INSERT INTO images (id, mistake_id, r2_key, content_type, size, kind, created_at) VALUES (?,?,?,?,?,?,?)')
+        .bind(newId(), nid, r.r2_key, r.content_type, r.size, r.kind, iso()).run();
+    }
+    created.push(nid);
+  }
+  return { ...(await getMistake(env, id, origin)), _ai: { model, filled: keys, items: items.length, created, raw: parsed } };
+}
+
+// 只填空白字段，不覆盖人工填写的内容
+function aiPatch(m, parsed) {
   const patch = {};
   for (const f of ['subject', 'topic', 'question', 'wrong_answer', 'correct_answer', 'analysis']) {
     if (!m[f] && parsed[f]) patch[f] = String(parsed[f]);
   }
   if (patch.subject && !SUBJECTS.includes(patch.subject)) patch.subject = '其他';
   if (!m.difficulty && parsed.difficulty) patch.difficulty = parsed.difficulty;
-  if (!m.tags.length && Array.isArray(parsed.tags)) patch.tags = parsed.tags;
-  const f = cleanFields(patch, true);
-  const keys = Object.keys(f);
-  if (keys.length) {
-    await env.DB.prepare(`UPDATE mistakes SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
-      .bind(...keys.map((k) => f[k]), iso(), id).run();
-  }
-  return { ...(await getMistake(env, id, origin)), _ai: { model, filled: keys, raw: parsed } };
+  if (!(m.tags || []).length && Array.isArray(parsed.tags)) patch.tags = parsed.tags;
+  return patch;
 }
 
-async function runVision(env, model, dataUrl) {
-  const messages = [{ role: 'user', content: [{ type: 'text', text: RECOG_PROMPT }, { type: 'image_url', image_url: { url: dataUrl } }] }];
+async function runVision(env, model, dataUrl, prompt) {
+  const messages = [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: dataUrl } }] }];
   // gemma-4 默认会先"思考"把 token 用光，关掉；llama-3.2-vision 不认这个参数但会忽略
   const r = await env.AI.run(model, { messages, max_tokens: 2048, chat_template_kwargs: { enable_thinking: false } });
   return r?.choices?.[0]?.message?.content ?? r?.response ?? r?.description ?? JSON.stringify(r);
@@ -412,7 +448,7 @@ async function exportAll(env, url) {
   for (const m of all) {
     lines.push(`## [${m.subject || '未分类'}] ${m.topic || '(无知识点)'} — ${m.id}`);
     lines.push(`- 状态: ${m.status === 'mastered' ? '已掌握' : '待复习'} | 连对: ${m.streak} | 复习次数: ${m.review_count} | 下次复习: ${m.next_review_at || '-'}`);
-    lines.push(`- 录入: ${m.created_at} by ${m.created_by}${m.source ? ' | 来源: ' + m.source : ''}${m.difficulty ? ' | 难度: ' + m.difficulty : ''}${m.tags.length ? ' | 标签: ' + m.tags.join(', ') : ''}`);
+    lines.push(`- 录入: ${m.created_at} by ${m.created_by}${m.source ? ' | 来源: ' + m.source : ''}${m.note ? ' | 备注: ' + m.note : ''}${m.difficulty ? ' | 难度: ' + m.difficulty : ''}${m.tags.length ? ' | 标签: ' + m.tags.join(', ') : ''}`);
     if (m.question) lines.push('', '**题目**', '', m.question);
     if (m.wrong_answer) lines.push('', `**错答**: ${m.wrong_answer}`);
     if (m.correct_answer) lines.push('', `**正解**: ${m.correct_answer}`);
@@ -434,7 +470,7 @@ Base URL: ${origin}/api/v1
 
 ## 数据模型 mistake
 id, subject(数学|语文|英语|科学|其他), topic(知识点), question(题目), wrong_answer, correct_answer, analysis(错因/解法),
-tags[], source(来源), difficulty(1-5), status(open|mastered), streak(连续答对), review_count, last_reviewed_at,
+tags[], source(来源), note(家长备注，识题时作为提示，如"第4、5题"), difficulty(1-5), status(open|mastered), streak(连续答对), review_count, last_reviewed_at,
 next_review_at, due(bool 现在该复习), created_by, created_at, updated_at, images[{id,kind,url}]
 
 ## 读取
@@ -454,7 +490,8 @@ DELETE /mistakes/{id}
 POST /mistakes/{id}/images   (JSON images[] 或 multipart photo)
 DELETE /mistakes/{id}/images/{imageId}
 POST /mistakes/{id}/review   {"result":"correct|wrong","note":"..."}   → 间隔重复：连对 ${MASTER_STREAK} 次自动 mastered；答错重置
-POST /mistakes/{id}/recognize   让 Workers AI 看第一张照片，自动填写空白字段
+POST /mistakes/{id}/recognize   {"hint":"可选提示"}  让 Workers AI 看第一张照片，自动填写空白字段；
+                                一张照片里有多道错题时会自动拆成多条记录（共用照片），返回 _ai.created=[新id]
 
 ## 典型 agent 用法
 - 每日复习：GET /mistakes?due=1 → 出题给孩子 → POST /review
