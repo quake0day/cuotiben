@@ -36,6 +36,7 @@ async function route(req, env, ctx, url, actor) {
   if (!p.startsWith('/api/v1/')) return json({ error: 'not found' }, 404);
 
   if (seg[0] === 'me') return json({ actor, subjects: SUBJECTS });
+  if (seg[0] === 'agent-brief' && m === 'GET') return text(agentBrief(url.origin, env), 'text/markdown; charset=utf-8');
   if (seg[0] === 'stats' && m === 'GET') return json(await stats(env));
   if (seg[0] === 'export' && m === 'GET') return exportAll(env, url);
   if (seg[0] === 'images' && seg[1] && m === 'GET') return serveImage(env, seg[1], req);
@@ -498,6 +499,35 @@ POST /mistakes/{id}/recognize   {"hint":"可选提示"}  让 Workers AI 看第�
 - 周报：GET /stats + GET /mistakes?since=<7天前>
 - 录入：拍照后 POST /mistakes (base64) 再 POST /recognize
 `;
+}
+
+function agentBrief(origin, env) {
+  return `你现在可以读写我女儿的错题本。下面是全部接入信息，请直接使用，不要再问我要地址或密钥。
+
+API_TOKEN: ${env.API_TOKEN}
+每个请求都带 header:  Authorization: Bearer ${env.API_TOKEN}
+可选 header:  X-Agent-Name: <你的名字>  （会记录到 created_by / reviewed_by）
+
+快速验证:
+curl -H "Authorization: Bearer ${env.API_TOKEN}" ${origin}/api/v1/stats
+
+读取全部错题（Markdown，最适合直接阅读）:
+curl -H "Authorization: Bearer ${env.API_TOKEN}" "${origin}/api/v1/export?format=md"
+
+今天该复习的题:
+curl -H "Authorization: Bearer ${env.API_TOKEN}" "${origin}/api/v1/mistakes?due=1"
+
+提交一道新错题:
+curl -H "Authorization: Bearer ${env.API_TOKEN}" -H "content-type: application/json" \\
+  -d '{"subject":"数学","topic":"分数加减","question":"1/2+1/3=?","wrong_answer":"2/5","correct_answer":"5/6","analysis":"分母不同要先通分","tags":["通分"]}' \\
+  ${origin}/api/v1/mistakes
+
+记录复习结果:
+curl -X POST -H "Authorization: Bearer ${env.API_TOKEN}" -H "content-type: application/json" \\
+  -d '{"result":"correct","note":"独立做对"}' ${origin}/api/v1/mistakes/<id>/review
+
+---- 完整 API 文档 ----
+${docs(origin)}`;
 }
 
 // ---------- utils ----------

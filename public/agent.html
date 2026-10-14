@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>错题本 · 给 bot 的接入说明</title>
+<style>
+:root{--bg:#f4f1ea;--card:#fff;--ink:#1f2a44;--mute:#7a7f8c;--line:#e6e2d8;--acc:#d9542b;--acc2:#2b6cb0;--ok:#2f855a}
+@media (prefers-color-scheme:dark){:root{--bg:#141720;--card:#1e2230;--ink:#e8e6e1;--mute:#9aa0ad;--line:#2d3240}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,"PingFang SC","Noto Sans SC",system-ui,sans-serif}
+header{background:var(--ink);color:#fff;padding:calc(10px + env(safe-area-inset-top)) 16px 10px;display:flex;align-items:center;gap:10px}
+header a{color:#fff;text-decoration:none;opacity:.85}header h1{font-size:17px;margin:0;flex:1}
+main{max-width:760px;margin:0 auto;padding:14px 16px 40px}
+p.hint{color:var(--mute);font-size:13px;margin:0 0 10px}
+.btn{border:0;border-radius:12px;padding:14px;font-size:16px;font-weight:700;color:#fff;background:var(--acc);width:100%;margin-bottom:10px}
+.btn.ok{background:var(--ok)}.btn.sec{background:var(--acc2)}
+textarea{width:100%;min-height:60vh;padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--ink);font:13px/1.45 ui-monospace,Menlo,monospace;resize:vertical;white-space:pre}
+.warn{background:#fde8e0;color:#9c2f0e;border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:12px}
+@media (prefers-color-scheme:dark){.warn{background:#3a2016;color:#f4b89f}}
+</style>
+</head>
+<body>
+<header><a href="/">‹ 错题本</a><h1>给 bot 的接入说明</h1></header>
+<main>
+  <div class="warn">⚠️ 这段文字包含 API 密钥。只粘贴给你信任的 AI；泄露了可用 <code>wrangler secret put API_TOKEN</code> 换新。</div>
+  <button class="btn" id="copy" onclick="copyAll()">📋 一键复制全部</button>
+  <button class="btn sec" onclick="copyShort()">📋 只复制简短版（地址 + token + 文档链接）</button>
+  <p class="hint">把复制的内容直接粘给 Claude / ChatGPT / 任何 agent，它就知道怎么读写错题本了。</p>
+  <textarea id="brief" readonly>加载中…</textarea>
+</main>
+<script>
+let brief = '', short = '';
+async function load() {
+  const r = await fetch('/api/v1/agent-brief');
+  if (r.status === 401) { location.href = '/'; return; }
+  brief = await r.text();
+  const tok = (brief.match(/API_TOKEN: (\S+)/) || [])[1] || '';
+  short = `错题本 API（我女儿的错题记录）：\n文档：${location.origin}/llms.txt  （先读这个）\nBase URL：${location.origin}/api/v1\n认证：每个请求带 header  Authorization: Bearer ${tok}\n快速验证：curl -H "Authorization: Bearer ${tok}" ${location.origin}/api/v1/stats`;
+  document.getElementById('brief').value = brief;
+}
+async function copyText(t, btn) {
+  try { await navigator.clipboard.writeText(t); }
+  catch { const ta = document.getElementById('brief'); const old = ta.value; ta.value = t; ta.select(); document.execCommand('copy'); ta.value = old; }
+  const o = btn.textContent; btn.textContent = '✅ 已复制'; btn.classList.add('ok'); setTimeout(() => { btn.textContent = o; btn.classList.remove('ok'); }, 1800);
+}
+function copyAll() { copyText(brief, document.getElementById('copy')); }
+function copyShort() { copyText(short, event.target); }
+load();
+</script>
+</body>
+</html>

@@ -327,7 +327,9 @@ async function renderStats() {
   shell(`<div class="stat"><div><b>${s.total}</b><span>总错题</span></div><div><b>${s.open}</b><span>待复习</span></div><div><b>${s.mastered}</b><span>已掌握</span></div><div><b>${s.added_last_7d}</b><span>近7天新增</span></div></div>
     <div class="rev"><b>各科目</b>${s.by_subject.map((x) => `<div class="bar"><span style="width:44px">${esc(x.subject || '未分类')}</span><i style="width:${x.total / max * 100}%;max-width:60%"></i><em>${x.total} (待${x.open})</em></div>`).join('') || '<p class="empty">无数据</p>'}</div>
     <div class="rev"><b>高频知识点</b>${s.top_topics.map((x) => `<div class="bar"><span>${sb(x.subject)} ${esc(x.topic)}</span><em>${x.total} 题</em></div>`).join('') || '<p class="empty">无数据</p>'}</div>
-    <div class="rev" style="font-size:13px;color:var(--mute)"><b>Agent API</b><br>文档：<a href="/llms.txt" target="_blank">${location.origin}/llms.txt</a><br>导出：<a href="/api/v1/export?format=md" target="_blank">全部错题 Markdown</a></div>`);
+    <div class="rev" style="font-size:13px;color:var(--mute)"><b>Agent API</b><br>
+      <a href="/agent.html" style="display:inline-block;margin:8px 0;padding:8px 14px;background:var(--acc2);color:#fff;border-radius:10px;text-decoration:none;font-weight:600">🤖 给 bot 的接入说明（一键复制）</a><br>
+      文档：<a href="/llms.txt" target="_blank">${location.origin}/llms.txt</a><br>导出：<a href="/api/v1/export?format=md" target="_blank">全部错题 Markdown</a></div>`);
 }
 
 // ---------- boot ----------
